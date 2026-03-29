@@ -1,0 +1,6 @@
+.git
+build
+*.md
+.github
+.gitignore
+models

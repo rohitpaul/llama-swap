@@ -1,0 +1,54 @@
+# Multi-stage: build llama-swap from source with UI and Prometheus metrics
+# Based on llama.cpp CUDA server image
+
+# Stage 1: Build Svelte UI
+FROM node:22-alpine AS ui-builder
+
+WORKDIR /build/ui-svelte
+COPY ui-svelte/package.json ui-svelte/package-lock.json ./
+COPY ui-svelte/.npmrc ./.npmrc
+RUN npm ci --legacy-peer-deps
+COPY ui-svelte/ .
+RUN npm run build
+
+# Stage 2: Build Go binary
+FROM golang:1.24-alpine AS go-builder
+
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+RUN rm -rf proxy/ui_dist
+COPY --from=ui-builder /build/proxy/ui_dist ./proxy/ui_dist/
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o /app/llama-swap .
+
+# Stage 3: Runtime on llama.cpp CUDA base
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda
+
+ARG UID=10001
+ARG GID=10001
+
+ENV HOME=/app
+
+RUN if [ $UID -ne 0 ]; then \
+      if [ $GID -ne 0 ]; then \
+        groupadd --system --gid $GID app; \
+      fi; \
+      useradd --system --uid $UID --gid $GID --home /app app; \
+    fi
+
+RUN mkdir -p /app && chown -R $UID:$GID /app
+
+USER $UID:$GID
+WORKDIR /app
+ENV PATH="/app:${PATH}"
+
+COPY --from=go-builder --chown=$UID:$GID /app/llama-swap .
+COPY --from=go-builder --chown=$UID:$GID /build/config.example.yaml ./config.yaml
+
+HEALTHCHECK CMD curl -f http://localhost:8080/ || exit 1
+ENTRYPOINT ["/app/llama-swap"]
+CMD ["-config", "/app/config.yaml", "-listen", "0.0.0.0:8080"]
