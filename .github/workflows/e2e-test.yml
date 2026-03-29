@@ -74,11 +74,12 @@ jobs:
       - name: Test root endpoint
         run: |
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/)
-          if [ "$STATUS" -ne 200 ]; then
-            echo "✗ Root endpoint returned $STATUS, expected 200"
+          # / redirects to /ui (302), both are valid
+          if [ "$STATUS" -ne 200 ] && [ "$STATUS" -ne 302 ]; then
+            echo "✗ Root endpoint returned $STATUS, expected 200 or 302"
             exit 1
           fi
-          echo "✓ Root endpoint returned 200"
+          echo "✓ Root endpoint returned $STATUS"
 
       - name: Test /v1/models API
         run: |
