@@ -1,3 +1,0 @@
-name: Validate JSON Schema
-on:
-  workflow_dispatch:

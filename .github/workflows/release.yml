@@ -1,3 +1,0 @@
-name: goreleaser
-on:
-  workflow_dispatch:

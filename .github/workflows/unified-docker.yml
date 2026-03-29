@@ -1,9 +1,6 @@
 name: Build Unified Docker Image
 
 on:
-  schedule:
-    - cron: "37 5 * * *"
-
   workflow_dispatch:
     inputs:
       llama_cpp_ref:

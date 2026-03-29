@@ -1,3 +1,0 @@
-name: Build Containers
-on:
-  workflow_dispatch:
