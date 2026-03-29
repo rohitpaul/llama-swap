@@ -66,6 +66,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check for upstream llama.cpp updates
+        id: check-upstream
+        run: |
+          echo "Checking for llama.cpp updates..."
+          
+          # Get latest release info
+          LATEST=$(curl -s "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest")
+          TAG=$(echo "$LATEST" | jq -r '.tag_name')
+          PUBLISHED=$(echo "$LATEST" | jq -r '.published_at')
+          
+          echo "Latest release: $TAG"
+          echo "Published: $PUBLISHED"
+          
+          # Calculate hours since release
+          PUB_EPOCH=$(date -d "$PUBLISHED" +%s)
+          NOW_EPOCH=$(date +%s)
+          HOURS_AGO=$(( (NOW_EPOCH - PUB_EPOCH) / 3600 ))
+          
+          echo "Hours since release: $HOURS_AGO"
+          echo "hours_ago=$HOURS_AGO" >> $GITHUB_OUTPUT
+          
+          if [ "$HOURS_AGO" -lt 24 ]; then
+            echo "🔔 NEW RELEASE in last 24 hours!"
+            echo "build_required=true" >> $GITHUB_OUTPUT
+          else
+            echo "No new release in last 24 hours"
+            echo "build_required=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -77,6 +106,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push (${{ matrix.tags }})
+        if: github.event_name == 'workflow_dispatch' || steps.check-upstream.outputs.build_required == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -86,3 +116,8 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Skip build - no updates
+        if: github.event_name == 'schedule' && steps.check-upstream.outputs.build_required == 'false'
+        run: |
+          echo "Skipping build - no upstream updates in last 24 hours"
