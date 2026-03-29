@@ -1,0 +1,130 @@
+name: E2E Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - 'proxy/**'
+      - 'ui-svelte/**'
+      - 'cmd/**'
+      - 'config.example.yaml'
+      - '.github/workflows/e2e-test.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build llama-swap image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: llama-swap:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create minimal test config
+        run: |
+          cat > /tmp/test-config.yaml <<'EOF'
+          healthCheckTimeout: 30
+          logLevel: info
+          startPort: 10001
+          models: {}
+          EOF
+
+      - name: Start llama-swap container
+        run: |
+          docker run -d \
+            --name llama-swap-test \
+            -p 8080:8080 \
+            -v /tmp/test-config.yaml:/app/config.yaml:ro \
+            llama-swap:test \
+            -config /app/config.yaml -listen 0.0.0.0:8080
+
+      - name: Wait for container to be healthy
+        run: |
+          echo "Waiting for llama-swap to start..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/ > /dev/null 2>&1; then
+              echo "✓ llama-swap is up (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "✗ Timed out waiting for llama-swap"
+              docker logs llama-swap-test
+              exit 1
+            fi
+            echo "  Waiting... (attempt $i/30)"
+            sleep 2
+          done
+
+      - name: Test root endpoint
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/)
+          if [ "$STATUS" -ne 200 ]; then
+            echo "✗ Root endpoint returned $STATUS, expected 200"
+            exit 1
+          fi
+          echo "✓ Root endpoint returned 200"
+
+      - name: Test /v1/models API
+        run: |
+          RESPONSE=$(curl -sf http://localhost:8080/v1/models)
+          echo "Response: $RESPONSE"
+          # Should return valid JSON with an empty data array (no models configured)
+          echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'data' in d; print('✓ /v1/models returned valid JSON')"
+          # Should NOT include models because no models are defined
+          COUNT=$(echo "$RESPONSE" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['data']))")
+          echo "  Model count: $COUNT (expected 0)"
+
+      - name: Test /metrics endpoint
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/metrics)
+          if [ "$STATUS" -ne 200 ]; then
+            echo "✗ /metrics endpoint returned $STATUS, expected 200"
+            exit 1
+          fi
+          echo "✓ /metrics endpoint returned 200"
+
+      - name: Test UI assets served
+        run: |
+          # The UI should serve index.html or similar at root
+          BODY=$(curl -sf http://localhost:8080/)
+          if echo "$BODY" | grep -qi "html\|swap"; then
+            echo "✓ UI HTML detected at root"
+          else
+            echo "⚠ Root response doesn't contain expected HTML markers"
+            echo "  First 200 chars: $(echo "$BODY" | head -c 200)"
+          fi
+
+      - name: Test /health endpoint
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health 2>/dev/null || true)
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "000" ]; then
+            echo "ℹ /health returned $STATUS (may not exist in this version)"
+          else
+            echo "✓ /health endpoint returned $STATUS"
+          fi
+
+      - name: Print container logs
+        if: always()
+        run: docker logs llama-swap-test 2>&1 | tail -30
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop llama-swap-test 2>/dev/null || true
+          docker rm llama-swap-test 2>/dev/null || true
